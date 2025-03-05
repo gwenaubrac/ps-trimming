@@ -26,13 +26,13 @@
 ##
 ## ---------------------------
 
-
 #### 0. SET UP ####
 library(dplyr)
 library(ggplot2)
 library(magrittr)
 library(survival)
 library(writexl)
+library(cobalt)
 
 cohort <- readRDS('Z:/EPI/Protocol 24_004042/Gwen - ipcw_methods/results/antidepressant/all-cause mortality/main/intermediate/cohort_iptw.rds')
 
@@ -78,18 +78,50 @@ cohort %<>%
 # ps_marg: marginal propensity score (i.e., prevalence of trt)
 # pf: preference score
 
+# fit ps model
 ps_model <- glm(
   new_trt ~ age_group + sex + year + ethnicity + deprivation + anxiety_base + 
     arrhythmia_base + cardiomyopathy_base +cerebrovascular_disease_base +
     chronic_renal_disease_base + copd_base + depression_base + epilepsy_base +
     heart_failure_base + hepatic_disease_base + hyperlipidemia_base + hypertension_base +
     ischemic_heart_disease_base + lvh_base + myocardial_infarction_base +pacemaker_base +
-    pvd_base + stroke_base + suicidal_ideation_self_harm_base + valvular_heart_disease_base,
+    pvd_base + stroke_base + suicidal_ideation_self_harm_base + valvular_heart_disease_base +
+    age_group * anxiety_base,
   family = binomial, 
   data = cohort
 )
 
 cohort$ps <- predict(ps_model, type = "response")
+
+# check balance
+test <- cohort
+covs <- subset(test, select = c(age_group, sex, year, ethnicity, deprivation, anxiety_base,
+                                  arrhythmia_base, cardiomyopathy_base, cerebrovascular_disease_base, 
+                                  chronic_renal_disease_base, copd_base, depression_base, epilepsy_base,
+                                  heart_failure_base, hepatic_disease_base, hyperlipidemia_base, hypertension_base,
+                                  ischemic_heart_disease_base, lvh_base, myocardial_infarction_base, pacemaker_base,
+                                  pvd_base, stroke_base, suicidal_ideation_self_harm_base, valvular_heart_disease_base
+  
+))
+test$IPTW <- if_else(test$new_trt == 1, 1/test$ps, 1/(1-test$ps))
+
+bal_tab <- bal.tab(new_trt ~ covs, data = test,
+                   weights = 'IPTW',
+                   binary = "std", continuous = "std", 
+                   stats = c('mean.diffs'),
+                   s.d.denom = 'pooled',
+                   un = TRUE, 
+                   thresholds = c(m = 0.1)
+) 
+
+
+iptw_balance_tab <- bal_tab$Balance %>% 
+  dplyr::rename('SMD (Unadjusted)' = Diff.Un,
+                'SMD (IPTW)' = Diff.Adj,
+                'Balance' = M.Threshold)
+rm(test, bal_tab, covs)
+# anxiety not balanced in basic PS model
+# so add interaction between age group and anxiety at baseline
 
 ps_model_marg <- glm(
   new_trt ~ 1,
@@ -129,6 +161,8 @@ ggsave("C:/Users/gwen.aubrac/Desktop/trimming_res/plots/pf_untrimmed.pdf",
 #### 2. PS-STRATIFY AND ESTIMATE ATE/ATT/ATU ####
 
 ## a) Get cutoff points and stratify data
+
+# version 1: deciles from overall PS
 ps_deciles <- quantile(cohort$ps, probs = seq(0.1, 0.9, by = 0.1))
 cohort$decile <- cut(cohort$ps, breaks = c(0, ps_deciles, 1), labels = 1:10, include.lowest = TRUE)
 
@@ -136,6 +170,37 @@ test <- cohort %>% group_by(decile) %>% summarize(mean_ps = mean(ps))
 ps_deciles
 
 cohort_strat <- split(cohort, cohort$decile)
+
+# version 2: deciles defined in untreated
+# untrt_only <- cohort %>% filter(new_trt == 0)
+# ps_deciles <- quantile(untrt_only$ps, probs = seq(0.1, 0.9, by = 0.1))
+# cohort$decile <- cut(cohort$ps, breaks = c(0, ps_deciles, 1), labels = 1:10, include.lowest = TRUE)
+# cohort_strat <- split(cohort, cohort$decile)
+# ps_deciles
+
+# version 3: deciles defined in treated
+# trt_only <- cohort %>% filter(new_trt == 1)
+# ps_deciles <- quantile(trt_only$ps, probs = seq(0.1, 0.9, by = 0.1))
+# cohort$decile <- cut(cohort$ps, breaks = c(0, ps_deciles, 1), labels = 1:10, include.lowest = TRUE)
+# cohort_strat <- split(cohort, cohort$decile)
+
+# patient char in dec 7/8/9 for treated vs untreated
+dec7 <- cohort_strat[[7]]
+
+library(table1)
+library(flextable)
+
+tbl1 <- table1(~ age_at_entry + age_group + sex + year + ethnicity + deprivation + anxiety_base + 
+                 arrhythmia_base + cardiomyopathy_base + cerebrovascular_disease_base + 
+                 chronic_renal_disease_base + copd_base + depression_base + epilepsy_base +
+                 heart_failure_base + hepatic_disease_base + hyperlipidemia_base + hypertension_base +
+                 ischemic_heart_disease_base + lvh_base + myocardial_infarction_base + pacemaker_base +
+                 pvd_base + stroke_base + suicidal_ideation_self_harm_base + valvular_heart_disease_base| trt, 
+               data = dec7)
+
+t1flex(tbl1) %>% 
+  save_as_docx(path="C:/Users/gwen.aubrac/Desktop/trimming_res/patient_char_dec7.docx")
+
 
 ## b) Estimate HRs 
 
